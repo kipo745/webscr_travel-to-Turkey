@@ -1,0 +1,266 @@
+import requests
+from bs4 import BeautifulSoup
+import time
+import random
+from datetime import datetime
+import json
+import csv
+
+class NewsScraper:
+    def __init__(self):
+        # Rotate through different user agents to avoid detection
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
+        ]
+
+        self.session = requests.Session()
+        self.articles = []
+
+    def get_headers(self):
+        """Get randomized headers to avoid detection"""
+        return {
+            'User-Agent': random.choice(self.user_agents),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+
+    def random_delay(self, min_delay=1, max_delay=3):
+        """Add random delay between requests"""
+        time.sleep(random.uniform(min_delay, max_delay))
+
+    def safe_request(self, url, max_retries=3):
+        """Make a safe request with retries and error handling"""
+        for attempt in range(max_retries):
+            try:
+                headers = self.get_headers()
+                response = self.session.get(url, headers=headers, timeout=10)
+
+                if response.status_code == 200:
+                    return response
+                elif response.status_code == 403:
+                    print(f"⚠️  Access forbidden for {url} - trying different approach...")
+                    self.random_delay(2, 5)  # Longer delay for 403
+                elif response.status_code == 429:
+                    print(f"⚠️  Rate limited - waiting...")
+                    self.random_delay(5, 10)  # Much longer delay for rate limiting
+                else:
+                    print(f"⚠️  HTTP {response.status_code} for {url}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️  Request failed for {url}: {str(e)}")
+
+            if attempt < max_retries - 1:
+                self.random_delay(2, 4)
+
+        return None
+
+    def scrape_hacker_news(self):
+        """Scrape Hacker News - usually works well"""
+        print("=== Scraping Hacker News ===")
+        url = "https://news.ycombinator.com/"
+
+        response = self.safe_request(url)
+        if not response:
+            return []
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        articles = []
+
+        # Find story links
+        story_links = soup.find_all('span', class_='titleline')
+
+        for i, story in enumerate(story_links[:10]):  # Limit to top 10
+            try:
+                link_tag = story.find('a')
+                if link_tag:
+                    title = link_tag.text.strip()
+                    url = link_tag.get('href', '')
+
+                    # Handle relative URLs
+                    if url.startswith('item?'):
+                        url = f"https://news.ycombinator.com/{url}"
+
+                    articles.append({
+                        'source': 'Hacker News',
+                        'title': title,
+                        'url': url,
+                        'scraped_at': datetime.now().isoformat()
+                    })
+            except Exception as e:
+                print(f"Error parsing HN story {i}: {e}")
+                continue
+
+        print(f"✅ Found {len(articles)} articles from Hacker News")
+        return articles
+
+    def scrape_bbc_news(self):
+        """Scrape BBC News with better selectors"""
+        print("=== Scraping BBC News ===")
+        url = "https://www.bbc.com/news"
+
+        response = self.safe_request(url)
+        if not response:
+            return []
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        articles = []
+
+        # Try multiple selectors for BBC articles
+        selectors = [
+            'h3[data-testid="card-headline"] a',
+            'h2[data-testid="card-headline"] a',
+            '.media__link',
+            'a[class*="gs-c-promo-heading"]'
+        ]
+
+        for selector in selectors:
+            links = soup.select(selector)
+            if links:
+                print(f"Using selector: {selector}")
+                break
+
+        for i, link in enumerate(links[:15]):  # Limit to 15 articles
+            try:
+                title = link.text.strip()
+                url = link.get('href', '')
+
+                if url and title:
+                    # Handle relative URLs
+                    if url.startswith('/'):
+                        url = f"https://www.bbc.com{url}"
+
+                    # Filter out non-news links
+                    if '/news/' in url or '/sport/' in url:
+                        articles.append({
+                            'source': 'BBC News',
+                            'title': title,
+                            'url': url,
+                            'scraped_at': datetime.now().isoformat()
+                        })
+            except Exception as e:
+                print(f"Error parsing BBC article {i}: {e}")
+                continue
+
+        print(f"✅ Found {len(articles)} articles from BBC News")
+        return articles
+
+    def scrape_alternative_news_sources(self):
+        """Scrape alternative news sources that are more scraping-friendly"""
+        print("=== Scraping TechCrunch (Alternative) ===")
+        articles = []
+
+        # TechCrunch RSS feed (more reliable)
+        rss_url = "https://techcrunch.com/feed/"
+        response = self.safe_request(rss_url)
+
+        if response:
+            try:
+                soup = BeautifulSoup(response.content, 'xml')
+                items = soup.find_all('item')[:10]
+
+                for item in items:
+                    title = item.find('title').text if item.find('title') else 'No title'
+                    link = item.find('link').text if item.find('link') else ''
+
+                    articles.append({
+                        'source': 'TechCrunch',
+                        'title': title,
+                        'url': link,
+                        'scraped_at': datetime.now().isoformat()
+                    })
+
+                print(f"✅ Found {len(articles)} articles from TechCrunch RSS")
+            except Exception as e:
+                print(f"Error parsing TechCrunch RSS: {e}")
+
+        return articles
+
+    def scrape_all_sources(self):
+        """Scrape all news sources"""
+        print("🚀 Starting Enhanced News Scraping...")
+        print("=" * 50)
+
+        all_articles = []
+
+        # Scrape each source with delays
+        sources = [
+            self.scrape_hacker_news,
+            self.scrape_bbc_news,
+            self.scrape_alternative_news_sources
+        ]
+
+        for scraper_func in sources:
+            try:
+                articles = scraper_func()
+                all_articles.extend(articles)
+                self.random_delay(2, 4)  # Delay between sources
+            except Exception as e:
+                print(f"Error in {scraper_func.__name__}: {e}")
+
+        self.articles = all_articles
+        return all_articles
+
+    def save_to_json(self, filename="news_articles.json"):
+        """Save articles to JSON file"""
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(self.articles, f, indent=2, ensure_ascii=False)
+        print(f"💾 Saved {len(self.articles)} articles to {filename}")
+
+    def save_to_csv(self, filename="news_articles.csv"):
+        """Save articles to CSV file"""
+        if not self.articles:
+            return
+
+        with open(filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['source', 'title', 'url', 'scraped_at'])
+            writer.writeheader()
+            writer.writerows(self.articles)
+        print(f"📊 Saved {len(self.articles)} articles to {filename}")
+
+    def display_articles(self):
+        """Display articles in console"""
+        if not self.articles:
+            print("❌ No articles found")
+            return
+
+        print(f"\n📰 Found {len(self.articles)} total articles:")
+        print("=" * 80)
+
+        for i, article in enumerate(self.articles, 1):
+            print(f"{i}. [{article['source']}] {article['title']}")
+            print(f"   🔗 {article['url']}")
+            print(f"   ⏰ {article['scraped_at']}")
+            print("-" * 80)
+
+def main():
+    scraper = NewsScraper()
+
+    # Scrape all sources
+    articles = scraper.scrape_all_sources()
+
+    if articles:
+        # Display results
+        scraper.display_articles()
+
+        # Save to files
+        scraper.save_to_json()
+        scraper.save_to_csv()
+
+        print(f"\n🎉 Successfully scraped {len(articles)} articles!")
+        print("📁 Check news_articles.json and news_articles.csv for saved data")
+    else:
+        print("\n😞 No articles were scraped. This might be due to:")
+        print("   • Anti-bot protection on websites")
+        print("   • Network connectivity issues")
+        print("   • Website structure changes")
+        print("   • Rate limiting")
+        print("\n💡 Try running again later or use the RSS feed alternatives")
+
+if __name__ == "__main__":
+    main()
